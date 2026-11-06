@@ -1284,8 +1284,17 @@ public:
             throw std::runtime_error("Qwen3 speech decoder graph compute failed");
         }
         const auto read_start = Clock::now();
-        std::vector<float> audio(static_cast<size_t>(waveform_frames_), 0.0F);
-        ggml_backend_tensor_get(output_, audio.data(), 0, audio.size() * sizeof(float));
+        // ggml_backend_tensor_get aborts the process on invalid tensor state.
+        // Report a failed synthesis so other requests can still use the server.
+        const auto * output = output_;
+        const size_t sample_count = static_cast<size_t>(waveform_frames_);
+        if (output == nullptr || output->data == nullptr ||
+            (output->view_src ? output->view_src->buffer : output->buffer) == nullptr ||
+            sample_count > ggml_nbytes(output) / sizeof(float)) {
+            throw std::runtime_error("Qwen3 speech decoder output tensor is unavailable");
+        }
+        std::vector<float> audio(sample_count, 0.0F);
+        ggml_backend_tensor_get(output, audio.data(), 0, audio.size() * sizeof(float));
         last_output_read_ms_ = engine::debug::elapsed_ms(read_start, Clock::now());
         if (stream_state_ != nullptr) stream_state_->frames += input_frames;
         return audio;
@@ -1473,7 +1482,14 @@ runtime::AudioBuffer Qwen3SpeechTokenizerDecoderRuntime::decode(const Qwen3Speec
             graph = std::move(replacement);
             ++graph_rebuilds;
         }
-        auto decoded = graph->run(chunk.data(), chunk.size());
+        std::vector<float> decoded;
+        try {
+            decoded = graph->run(chunk.data(), chunk.size());
+        } catch (...) {
+            // Never reuse a decoder graph whose execution or readback failed.
+            graph.reset();
+            throw;
+        }
         input_upload_ms += graph->last_input_upload_ms();
         graph_compute_ms += graph->last_graph_compute_ms();
         output_read_ms += graph->last_output_read_ms();
