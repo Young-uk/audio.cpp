@@ -807,6 +807,11 @@ void ParallelServerState::ensure_model_loaded_locked(LoadedModel & model) {
     model.sessions = std::move(sessions);
     model.parallel_resident.store(true);
     model.loaded.store(true);
+    // Loading can exceed the idle timeout. Count inactivity from successful
+    // publication, not from entry, so a new resident gets the full idle window.
+    const auto completed_at_ms = steady_now_ms();
+    model.last_used_ms.store(completed_at_ms, std::memory_order_relaxed);
+    last_activity_ms_.store(completed_at_ms, std::memory_order_relaxed);
 }
 
 LiveIngestLimits ParallelServerState::live_ingest_limits(const HttpRequest & request) const {
@@ -2496,6 +2501,11 @@ void ParallelServerState::unload_idle_models() {
         const auto lock = model->busy.try_acquire();
         if (!lock.has_value()) {
             continue;
+        }
+        // A load/run may have completed after the idle loop's snapshot. Check
+        // again after admission so a stale decision cannot evict fresh activity.
+        if (steady_now_ms() - last_activity_ms_.load(std::memory_order_relaxed) < config_.idle_unload_ms) {
+            break;
         }
         model->unload();
         ++unloaded;

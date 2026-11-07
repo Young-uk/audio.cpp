@@ -185,9 +185,11 @@ struct PerfPreset {
     PerfSettings defaults;
 };
 
-constexpr std::array<PerfPreset, 3> kPerfPresets{{
+constexpr std::array<PerfPreset, 4> kPerfPresets{{
     {"off", {}},
     {"flash_attention", {core::AttentionPreference::Flash}},
+    // Opt-in: keep mixed attention and F32 KV; pack projection weights only.
+    {"metal_packed", {std::nullopt, true}},
     {"cuda_perf", {core::AttentionPreference::Flash, true, true, GGML_TYPE_F16, 256, true,
                     engine::assets::TensorStorageType::F16}},
 }};

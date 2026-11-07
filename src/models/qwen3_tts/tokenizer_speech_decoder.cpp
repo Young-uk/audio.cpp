@@ -1,6 +1,7 @@
 #include "engine/models/qwen3_tts/tokenizer_speech_decoder.h"
 
 #include "engine/models/qwen3_tts/rknn_speech_decoder.h"
+#include "decoder_graph_helpers.h"
 
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/backend.h"
@@ -1284,17 +1285,7 @@ public:
             throw std::runtime_error("Qwen3 speech decoder graph compute failed");
         }
         const auto read_start = Clock::now();
-        // ggml_backend_tensor_get aborts the process on invalid tensor state.
-        // Report a failed synthesis so other requests can still use the server.
-        const auto * output = output_;
-        const size_t sample_count = static_cast<size_t>(waveform_frames_);
-        if (output == nullptr || output->data == nullptr ||
-            (output->view_src ? output->view_src->buffer : output->buffer) == nullptr ||
-            sample_count > ggml_nbytes(output) / sizeof(float)) {
-            throw std::runtime_error("Qwen3 speech decoder output tensor is unavailable");
-        }
-        std::vector<float> audio(sample_count, 0.0F);
-        ggml_backend_tensor_get(output, audio.data(), 0, audio.size() * sizeof(float));
+        auto audio = detail::read_decoder_output(output_, static_cast<size_t>(waveform_frames_));
         last_output_read_ms_ = engine::debug::elapsed_ms(read_start, Clock::now());
         if (stream_state_ != nullptr) stream_state_->frames += input_frames;
         return audio;
@@ -1482,14 +1473,7 @@ runtime::AudioBuffer Qwen3SpeechTokenizerDecoderRuntime::decode(const Qwen3Speec
             graph = std::move(replacement);
             ++graph_rebuilds;
         }
-        std::vector<float> decoded;
-        try {
-            decoded = graph->run(chunk.data(), chunk.size());
-        } catch (...) {
-            // Never reuse a decoder graph whose execution or readback failed.
-            graph.reset();
-            throw;
-        }
+        auto decoded = detail::run_cached_decoder_graph(graph, chunk.data(), chunk.size());
         input_upload_ms += graph->last_input_upload_ms();
         graph_compute_ms += graph->last_graph_compute_ms();
         output_read_ms += graph->last_output_read_ms();
@@ -1558,7 +1542,8 @@ runtime::AudioBuffer Qwen3SpeechTokenizerDecoderRuntime::decode_stream_chunk(
                 ++rebuilds;
             }
             graph_build_ms += engine::debug::elapsed_ms(build_start);
-            auto samples = graph->run(codes, static_cast<size_t>(frames * codec_codes.code_groups));
+            auto samples = detail::run_cached_decoder_graph(
+                graph, codes, static_cast<size_t>(frames * codec_codes.code_groups));
             graph_compute_ms += graph->last_graph_compute_ms();
             input_upload_ms += graph->last_input_upload_ms();
             output_read_ms += graph->last_output_read_ms();
@@ -1597,7 +1582,8 @@ runtime::AudioBuffer Qwen3SpeechTokenizerDecoderRuntime::decode_stream_chunk(
     debug::timing_log_scalar("qwen3_tts.speech_decoder.graph.build_ms", engine::debug::elapsed_ms(begin));
     // All decoder layers are causal. Right padding allows the initial and final
     // short chunks to use the same graph without changing their valid samples.
-    auto decoded = graph->run(codec_codes.codes.data(), codec_codes.codes.size());
+    auto decoded = detail::run_cached_decoder_graph(
+        graph, codec_codes.codes.data(), codec_codes.codes.size());
     debug::timing_log_scalar("qwen3_tts.speech_decoder.graph.compute_ms", graph->last_graph_compute_ms());
     debug::timing_log_scalar("qwen3_tts.speech_decoder.input_upload_ms", graph->last_input_upload_ms());
     debug::timing_log_scalar("qwen3_tts.speech_decoder.output_read_ms", graph->last_output_read_ms());

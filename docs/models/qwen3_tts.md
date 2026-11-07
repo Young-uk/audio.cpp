@@ -167,7 +167,7 @@ In server configs, put the same keys and values in the model's `session_options`
 | `qwen3_tts.mem_saver` | bool | `false` | Release the talker cached-step graph after each request. Voice-prompt, prefill, code-predictor, and speech-decoder caches remain reusable. |
 | `qwen3_tts.lora` | adapter directory or checkpoint file | not set | Load a PEFT Talker/Subtalker adapter at session creation. Keep `adapter_config.json` beside its weights. A trained custom voice may also provide `speaker_embedding` and `tts_config.json` sidecars; select its name with `voice_id`. |
 | `qwen3_tts.lora_scale` | finite float | `1` | Strength multiplier applied after the adapter's alpha/r scaling. Speaker embedding replacements are not scaled. |
-| `qwen3_tts.perf_mode` | `off`, `flash_attention`, `cuda_perf` | `off` | Preset. `off` keeps normal defaults; `flash_attention` selects flash attention. `cuda_perf` also selects packing, optimized cache writes, F16 KV and convolution weights, stateful streaming decoding, and KV alignment 256. Explicit options override the preset. |
+| `qwen3_tts.perf_mode` | `off`, `flash_attention`, `metal_packed`, `cuda_perf` | `off` | Preset. `off` keeps normal defaults; `flash_attention` selects flash attention. `metal_packed` selects packed projections only, retaining mixed attention and F32 KV. It is opt-in and may increase resident weight memory. `cuda_perf` also selects packing, optimized cache writes, F16 KV and convolution weights, stateful streaming decoding, and KV alignment 256. Explicit options override the preset. |
 | `qwen3_tts.attention` | `mixed`, `auto`, `eager`, `flash` | `mixed` | `mixed` uses manual prefill and contiguous-K/V flash cached decoding for the talker and code predictor, with eager speech tokenization. `auto` uses the shared backend policy; `eager` disables flash; `flash` uses flash with K/V views. Explicit values override the preset; `cuda_perf` selects `flash`. |
 | `qwen3_tts.packed_projections` | bool | `false`; `true` with `cuda_perf` | Pack QKV and gate/up projections in the talker and code predictor without changing weight dtype. |
 | `qwen3_tts.kv_cache_write` | `standard`, `optimized` | `standard`; `optimized` with `cuda_perf` | Optimized cache views and I64 indices allow backend fusion where supported; no CUDA-version requirement. |
@@ -222,3 +222,39 @@ and see [the Rockchip NPU build guide](../build/rockchip-npu.md) for the toolkit
 venv, the measured numbers, and the limits of this path. This path is opt-in
 and validated only on RK3588.
 
+
+For isolated Metal profiling, `AUDIOCPP_METAL_MEMORY_PROFILE=1` reports the
+observed high-water mark of device-reported allocated bytes before/after graph
+computations. This is distinct from process RSS and can miss short-lived
+allocations inside a computation. Leave it unset for normal throughput timing.
+
+The `metal_packed` preset is experimental. On one M1 Max CustomVoice Q8_0
+comparison, three fixed-seed utterances retained identical PCM and showed only
+about 1-2% warm median improvement after bracketing with baseline runs. Process
+maximum RSS increased by about 472 MiB while the graph-boundary Metal allocation
+high-water mark was nearly unchanged. Keep the default unchanged; this is not
+a memory-saving preset or a general speed guarantee. Validate more voices, long
+utterances, cancellation and model reloads before deployment.
+
+## Decoder recovery checks
+
+Invalid decoder waveform state is reported as a synthesis error instead of
+entering ggml's aborting readback assertions. Offline, windowed-streaming and
+stateful-streaming caches discard a graph whose compute or readback throws,
+so the next use rebuilds that graph. Stateful history is cleared before the
+next utterance. This does not identify or repair the underlying cause of an
+invalid backend tensor or guarantee recovery from a lost device.
+
+With `ENGINE_BUILD_TESTS=ON` and `qwen3_tts` in the selected model set,
+`qwen3_tts_decoder_recovery_test` exercises waveform guards and the shared
+cache-failure policy without model weights or a GPU:
+
+```bash
+cmake --build build --target qwen3_tts_decoder_recovery_test
+ctest --test-dir build -R '^qwen3_tts_decoder_recovery_test$' --output-on-failure
+```
+
+These synthetic faults cover null/unallocated tensors, invalid layout and
+read bounds, and rebuilding after a failed cached graph. They are not a
+natural reproduction of a Metal backend failure. Real-model fixed-seed
+comparisons and disconnect/reload checks remain separate integration tests.

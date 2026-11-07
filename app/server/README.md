@@ -445,7 +445,9 @@ startup loads the first entries up to the limit and defers the remainder.
 
 Idle unloading frees memory during quiet periods, not while inference is active.
 It complements the resident-model limit; it is not a per-request teardown mode.
-The next request reloads the model.
+The next request reloads the model. The idle window starts at successful model
+load completion (and is refreshed when inference completes), so a slow initial
+load does not consume the newly resident model's idle window.
 
 The optional free-memory guard checks host memory and GPU memory where available.
 Its load estimate covers the selected weight file/package plus session auxiliary

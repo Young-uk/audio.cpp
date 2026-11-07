@@ -4,6 +4,7 @@
 #include "engine/framework/io/json.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -704,9 +705,29 @@ ggml_status compute_backend_graph(
 #else
     (void)label;
 #endif
-    return plan != nullptr
+    // Opt-in observation at graph boundaries. This is a sampled Metal resource
+    // high-water mark, not a guarantee about transient allocations inside a graph.
+    static const bool profile_memory = std::getenv("AUDIOCPP_METAL_MEMORY_PROFILE") != nullptr;
+    static std::atomic<int64_t> observed_peak{0};
+    const auto observe_memory = [&] {
+        if (!profile_memory || backend_type(backend) != BackendType::Metal) return;
+        const auto memory = query_backend_memory(backend, 0);
+        if (!memory.available) return;
+        auto previous = observed_peak.load(std::memory_order_relaxed);
+        while (memory.used_bytes > previous) {
+            if (observed_peak.compare_exchange_weak(previous, memory.used_bytes, std::memory_order_relaxed)) {
+                std::fprintf(stderr, "audio.cpp: Metal graph-boundary allocated high-water bytes=%lld\n",
+                             static_cast<long long>(memory.used_bytes));
+                break;
+            }
+        }
+    };
+    observe_memory();
+    const auto status = plan != nullptr
         ? ggml_backend_graph_plan_compute(backend, plan)
         : ggml_backend_graph_compute(backend, graph);
+    observe_memory();
+    return status;
 }
 
 void prepare_host_graph_plan(const ExecutionContext & execution_context, ggml_cgraph * graph, HostGraphPlan & plan) {

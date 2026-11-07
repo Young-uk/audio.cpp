@@ -3805,6 +3805,24 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
         add_test(NAME server_parallel_lifecycle_test COMMAND server_parallel_lifecycle_test)
         set_tests_properties(server_parallel_lifecycle_test PROPERTIES TIMEOUT 90)
 
+        get_target_property(server_idle_sources audiocpp_server SOURCES)
+        list(FILTER server_idle_sources EXCLUDE REGEX "app/server/(main|model_installer)\\.cpp$")
+        list(FILTER server_idle_sources EXCLUDE REGEX "audiocpp_server_frontends")
+        add_executable(server_idle_unload_test
+            tests/unittests/test_server_idle_unload.cpp ${server_idle_sources})
+        target_include_directories(server_idle_unload_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/app/server
+            "${AUDIOCPP_SERVER_TEST_GENERATED_DIR}"
+            "${CMAKE_CURRENT_BINARY_DIR}/generated")
+        target_link_libraries(server_idle_unload_test PRIVATE engine_runtime ggml Threads::Threads)
+        if(WIN32)
+            target_link_libraries(server_idle_unload_test PRIVATE ws2_32)
+        endif()
+        foreach(idle_case IN ITEMS load-completion idle-recheck load-failure)
+            add_test(NAME server_idle_${idle_case}_test COMMAND server_idle_unload_test ${idle_case})
+            set_tests_properties(server_idle_${idle_case}_test PROPERTIES TIMEOUT 30)
+        endforeach()
+
         add_executable(session_pool_test tests/unittests/test_session_pool.cpp)
         target_include_directories(session_pool_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/app/server)
         # TaskResult owns JSON values for custom-schema outputs.
@@ -3856,6 +3874,16 @@ if (ENGINE_BUILD_TESTS OR ENGINE_BUILD_EXTENDED_TESTS OR ENGINE_BUILD_MODEL_TEST
             NAME citrinet_tokenizer_decode_test
             COMMAND citrinet_tokenizer_decode_test
         )
+
+        if (qwen3_tts IN_LIST AUDIOCPP_LINKED_MODELS)
+            # No model weights or GPU required: readback guards and graph recovery.
+            add_executable(qwen3_tts_decoder_recovery_test tests/qwen3_tts/test_decoder_recovery.cpp)
+            target_link_libraries(qwen3_tts_decoder_recovery_test PRIVATE ggml)
+            target_include_directories(qwen3_tts_decoder_recovery_test PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/models/qwen3_tts
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+            add_test(NAME qwen3_tts_decoder_recovery_test COMMAND qwen3_tts_decoder_recovery_test)
+        endif()
 
         add_engine_unittest(audio_dsp_test tests/unittests/test_audio_dsp.cpp)
         add_test(NAME audio_dsp_test COMMAND audio_dsp_test)

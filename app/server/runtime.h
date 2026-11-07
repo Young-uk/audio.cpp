@@ -14,6 +14,7 @@
 
 #include "engine/framework/io/json.h"
 #include "engine/framework/runtime/model.h"
+#include "engine/framework/runtime/registry.h"
 #include "engine/framework/runtime/session.h"
 
 #include <atomic>
@@ -52,6 +53,9 @@ public:
 
 private:
     friend struct RequestDispatcher;
+    // Controlled runtime tests supply loaders without product flags.
+    friend class ServerRuntimeTestAccess;
+    std::function<engine::runtime::ModelRegistry()> registry_factory_;
 
     struct LoadedModel {
         ServerModelConfig config;
